@@ -26,6 +26,7 @@
 #include <sys/mount.h>
 #include <sys/ioctl.h>
 #include <dirent.h>
+#include <cutils/properties.h>
 
 #include <linux/kdev_t.h>
 
@@ -168,14 +169,24 @@ VolumeManager *VolumeManager::Instance() {
 }
 
 VolumeManager::VolumeManager() {
+    char value[PROPERTY_VALUE_MAX];
+    int dirty_ratio;
+
+    property_get("ro.sys.umsdirtyratio", value, "0");
+    dirty_ratio = atoi(value);
+    if (dirty_ratio < 0 || dirty_ratio > 40) {
+        SLOGE("Invalid dirty ratio value %d, set as zero", dirty_ratio);
+        dirty_ratio = 0;
+    }
+
     mDebug = false;
     mVolumes = new VolumeCollection();
     mActiveContainers = new AsecIdCollection();
     mBroadcaster = NULL;
     mUmsSharingCount = 0;
     mSavedDirtyRatio = -1;
-    // set dirty ratio to 0 when UMS is active
-    mUmsDirtyRatio = 0;
+    // set dirty ratio when UMS is active
+    mUmsDirtyRatio = dirty_ratio;
     mVolManagerDisabled = 0;
 }
 
