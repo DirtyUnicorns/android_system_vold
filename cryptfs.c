@@ -2564,11 +2564,19 @@ static int cryptfs_enable_inplace_ext4(char *crypto_blkdev,
         goto errout;
     }
 
-    if ( (data.cryptofd = open(crypto_blkdev, O_WRONLY|O_CLOEXEC)) < 0) {
-        SLOGE("Error opening crypto_blkdev %s for ext4 inplace encrypt. err=%d(%s)\n",
-              crypto_blkdev, errno, strerror(errno));
-        rc = ENABLE_INPLACE_ERR_DEV;
-        goto errout;
+    // Wait until the block device appears.  Re-use the mount retry values since it is reasonable.
+    int retries = RETRY_MOUNT_ATTEMPTS;
+    while ((data.cryptofd = open(crypto_blkdev, O_WRONLY|O_CLOEXEC)) < 0) {
+        if (--retries) {
+            SLOGE("Error opening crypto_blkdev %s for ext4 inplace encrypt. err=%d(%s), retrying\n",
+                  crypto_blkdev, errno, strerror(errno));
+            sleep(RETRY_MOUNT_DELAY_SECONDS);
+        } else {
+            SLOGE("Error opening crypto_blkdev %s for ext4 inplace encrypt. err=%d(%s)\n",
+                  crypto_blkdev, errno, strerror(errno));
+            rc = ENABLE_INPLACE_ERR_DEV;
+            goto errout;
+        }
     }
 
     if (setjmp(setjmp_env)) {
@@ -3012,7 +3020,7 @@ static int cryptfs_enable_all_volumes(struct crypt_mnt_ftr *crypt_ftr, int how,
 }
 
 int cryptfs_enable_internal(char *howarg, int crypt_type, char *passwd,
-                            int allow_reboot)
+                            int no_ui)
 {
     int how = 0;
     char crypto_blkdev[MAXPATHLEN], real_blkdev[MAXPATHLEN];
@@ -3115,11 +3123,7 @@ int cryptfs_enable_internal(char *howarg, int crypt_type, char *passwd,
 
     /* Now unmount the /data partition. */
     if (wait_and_unmount(DATA_MNT_POINT, false)) {
-        if (allow_reboot) {
-            goto error_shutting_down;
-        } else {
-            goto error_unencrypted;
-        }
+        goto error_unencrypted;
     }
 
     /* Start the actual work of making an encrypted filesystem */
@@ -3204,7 +3208,9 @@ int cryptfs_enable_internal(char *howarg, int crypt_type, char *passwd,
          * restart the graphics services.
          */
         sleep(2);
+    }
 
+    if (how == CRYPTO_ENABLE_INPLACE && !no_ui) {
         /* startup service classes main and late_start */
         property_set("vold.decrypt", "trigger_restart_min_framework");
         SLOGD("Just triggered restart_min_framework\n");
@@ -3351,21 +3357,23 @@ error_shutting_down:
     return -1;
 }
 
-int cryptfs_enable(char *howarg, int type, char *passwd, int allow_reboot)
+int cryptfs_enable(char *howarg, int type, char *passwd, int no_ui)
 {
-    return cryptfs_enable_internal(howarg, type, passwd, allow_reboot);
+    return cryptfs_enable_internal(howarg, type, passwd, no_ui);
 }
 
-int cryptfs_enable_default(char *howarg, int allow_reboot)
+int cryptfs_enable_default(char *howarg, int no_ui)
 {
     return cryptfs_enable_internal(howarg, CRYPT_TYPE_DEFAULT,
-                          DEFAULT_PASSWORD, allow_reboot);
+                          DEFAULT_PASSWORD, no_ui);
 }
 
 int cryptfs_changepw(int crypt_type, const char *currentpw, const char *newpw)
 {
     if (e4crypt_crypto_complete(DATA_MNT_POINT) == 0) {
-        return e4crypt_change_password(DATA_MNT_POINT, crypt_type, newpw);
+        return e4crypt_change_password(DATA_MNT_POINT, crypt_type,
+                    crypt_type == CRYPT_TYPE_DEFAULT ? DEFAULT_PASSWORD
+                                                     : newpw);
     }
 
     struct crypt_mnt_ftr crypt_ftr;
